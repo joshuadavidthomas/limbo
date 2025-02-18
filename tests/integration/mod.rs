@@ -1,4 +1,5 @@
 mod common;
 mod functions;
-mod pragma;
+mod fuzz;
 mod query_processing;
+mod wal;

@@ -14,11 +14,13 @@ pub enum LimboError {
     ParseError(String),
     #[error(transparent)]
     #[diagnostic(transparent)]
-    LexerError(#[from] sqlite3_parser::lexer::sql::Error),
+    LexerError(#[from] limbo_sqlite3_parser::lexer::sql::Error),
     #[error("Conversion error: {0}")]
     ConversionError(String),
     #[error("Env variable error: {0}")]
     EnvVarError(#[from] std::env::VarError),
+    #[error("Transaction error: {0}")]
+    TxError(String),
     #[error("I/O error: {0}")]
     IOError(#[from] std::io::Error),
     #[cfg(all(target_os = "linux", feature = "io_uring"))]
@@ -39,12 +41,18 @@ pub enum LimboError {
     InvalidTime(String),
     #[error("Modifier parsing error: {0}")]
     InvalidModifier(String),
+    #[error("Invalid argument supplied: {0}")]
+    InvalidArgument(String),
+    #[error("Invalid formatter supplied: {0}")]
+    InvalidFormatter(String),
     #[error("Runtime error: {0}")]
     Constraint(String),
     #[error("Extension error: {0}")]
     ExtensionError(String),
     #[error("Unbound parameter at index {0}")]
     Unbound(NonZero<usize>),
+    #[error("Runtime error: integer overflow")]
+    IntegerOverflow,
 }
 
 #[macro_export]

@@ -5,9 +5,16 @@ authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Limbo percentile extension"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
+
+[features]
+static = ["limbo_ext/static"]
 
 [dependencies]
-limbo_ext = { path = "../core" }
+limbo_ext = { workspace = true, features = ["static"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+mimalloc = { version = "0.1", default-features = false }

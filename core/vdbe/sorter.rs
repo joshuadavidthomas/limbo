@@ -1,9 +1,9 @@
-use crate::types::OwnedRecord;
+use crate::types::Record;
 use std::cmp::Ordering;
 
 pub struct Sorter {
-    records: Vec<OwnedRecord>,
-    current: Option<OwnedRecord>,
+    records: Vec<Record>,
+    current: Option<Record>,
     order: Vec<bool>,
 }
 
@@ -27,8 +27,8 @@ impl Sorter {
     pub fn sort(&mut self) {
         self.records.sort_by(|a, b| {
             let cmp_by_idx = |idx: usize, ascending: bool| {
-                let a = &a.values[idx];
-                let b = &b.values[idx];
+                let a = &a.get_value(idx);
+                let b = &b.get_value(idx);
                 if ascending {
                     a.cmp(b)
                 } else {
@@ -51,11 +51,11 @@ impl Sorter {
     pub fn next(&mut self) {
         self.current = self.records.pop();
     }
-    pub fn record(&self) -> Option<&OwnedRecord> {
+    pub fn record(&self) -> Option<&Record> {
         self.current.as_ref()
     }
 
-    pub fn insert(&mut self, record: &OwnedRecord) {
-        self.records.push(OwnedRecord::new(record.values.to_vec()));
+    pub fn insert(&mut self, record: &Record) {
+        self.records.push(Record::new(record.get_values().to_vec()));
     }
 }

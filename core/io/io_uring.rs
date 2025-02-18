@@ -1,16 +1,15 @@
 use super::{common, Completion, File, OpenFlags, IO};
 use crate::{LimboError, Result};
-use log::{debug, trace};
 use rustix::fs::{self, FlockOperation, OFlags};
 use rustix::io_uring::iovec;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fmt;
 use std::io::ErrorKind;
 use std::os::fd::AsFd;
 use std::os::unix::io::AsRawFd;
 use std::rc::Rc;
 use thiserror::Error;
+use tracing::{debug, trace};
 
 const MAX_IOVECS: u32 = 128;
 const SQPOLL_IDLE: u32 = 1000;
@@ -20,7 +19,6 @@ enum UringIOError {
     IOUringCQError(i32),
 }
 
-// Implement the Display trait to customize error messages
 impl fmt::Display for UringIOError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -40,7 +38,7 @@ pub struct UringIO {
 struct WrappedIOUring {
     ring: io_uring::IoUring,
     pending_ops: usize,
-    pub pending: HashMap<u64, Rc<Completion>>,
+    pub pending: [Option<Completion>; MAX_IOVECS as usize + 1],
     key: u64,
 }
 
@@ -63,7 +61,7 @@ impl UringIO {
             ring: WrappedIOUring {
                 ring,
                 pending_ops: 0,
-                pending: HashMap::new(),
+                pending: [const { None }; MAX_IOVECS as usize + 1],
                 key: 0,
             },
             iovecs: [iovec {
@@ -90,9 +88,9 @@ impl InnerUringIO {
 }
 
 impl WrappedIOUring {
-    fn submit_entry(&mut self, entry: &io_uring::squeue::Entry, c: Rc<Completion>) {
+    fn submit_entry(&mut self, entry: &io_uring::squeue::Entry, c: Completion) {
         trace!("submit_entry({:?})", entry);
-        self.pending.insert(entry.get_user_data(), c);
+        self.pending[entry.get_user_data() as usize] = Some(c);
         unsafe {
             self.ring
                 .submission()
@@ -124,6 +122,11 @@ impl WrappedIOUring {
 
     fn get_key(&mut self) -> u64 {
         self.key += 1;
+        if self.key == MAX_IOVECS as u64 {
+            let key = self.key;
+            self.key = 0;
+            return key;
+        }
         self.key
     }
 }
@@ -175,10 +178,11 @@ impl IO for UringIO {
                 )));
             }
             {
-                let c = ring.pending.get(&cqe.user_data()).unwrap().clone();
-                c.complete(cqe.result());
+                if let Some(c) = ring.pending[cqe.user_data() as usize].as_ref() {
+                    c.complete(cqe.result());
+                }
             }
-            ring.pending.remove(&cqe.user_data());
+            ring.pending[cqe.user_data() as usize] = None;
         }
         Ok(())
     }
@@ -237,11 +241,8 @@ impl File for UringFile {
         Ok(())
     }
 
-    fn pread(&self, pos: usize, c: Rc<Completion>) -> Result<()> {
-        let r = match c.as_ref() {
-            Completion::Read(r) => r,
-            _ => unreachable!(),
-        };
+    fn pread(&self, pos: usize, c: Completion) -> Result<()> {
+        let r = c.as_read();
         trace!("pread(pos = {}, length = {})", pos, r.buf().len());
         let fd = io_uring::types::Fd(self.file.as_raw_fd());
         let mut io = self.io.borrow_mut();
@@ -259,12 +260,7 @@ impl File for UringFile {
         Ok(())
     }
 
-    fn pwrite(
-        &self,
-        pos: usize,
-        buffer: Rc<RefCell<crate::Buffer>>,
-        c: Rc<Completion>,
-    ) -> Result<()> {
+    fn pwrite(&self, pos: usize, buffer: Rc<RefCell<crate::Buffer>>, c: Completion) -> Result<()> {
         let mut io = self.io.borrow_mut();
         let fd = io_uring::types::Fd(self.file.as_raw_fd());
         let write = {
@@ -280,7 +276,7 @@ impl File for UringFile {
         Ok(())
     }
 
-    fn sync(&self, c: Rc<Completion>) -> Result<()> {
+    fn sync(&self, c: Completion) -> Result<()> {
         let fd = io_uring::types::Fd(self.file.as_raw_fd());
         let mut io = self.io.borrow_mut();
         trace!("sync()");

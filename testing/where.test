@@ -3,6 +3,53 @@
 set testdir [file dirname $argv0]
 source $testdir/tester.tcl
 
+do_execsql_test_small where-is-null {
+    select count(*) from demo where value is null;
+} {2}
+
+do_execsql_test_small where-equals-null {
+    select count(*) from demo where value = null;
+} {0}
+
+do_execsql_test_small where-is-not-null {
+    select count(*) from demo where value is not null;
+} {3}
+
+do_execsql_test_small where-not-equal-null {
+    select count(*) from demo where value != null;
+} {0}
+
+do_execsql_test_small where-is-a-with-nulls {
+    select count(*) from demo where value is 'A';
+} {1}
+
+do_execsql_test_small where-equals-a-with-nulls {
+    select count(*) from demo where value == 'A';
+} {1}
+
+do_execsql_test_small where-is-not-a-with-nulls {
+    select count(*) from demo where value is not 'A';
+} {4}
+
+do_execsql_test_small where-not-equals-a-with-nulls {
+    select count(*) from demo where value != 'A';
+} {2}
+
+do_execsql_test_small where-is-null-combined {
+    select * from demo where value is null or id = 3;
+} {2|
+3|B
+4|
+}
+
+do_execsql_test_small where-is-not-null-combined {
+    select * from demo where value is not null or id = 2;
+} {1|A
+2|
+3|B
+5|C
+}
+
 do_execsql_test where-clause-eq {
     select last_name from users where id = 2000;
 } {Rodriguez}
@@ -10,6 +57,14 @@ do_execsql_test where-clause-eq {
 do_execsql_test where-clause-eq-string {
     select count(1) from users where last_name = 'Rodriguez';
 } {61}
+
+do_execsql_test where-clause-isnull {
+    select count(1) from users where last_name isnull;
+} {0}
+
+do_execsql_test where-clause-notnull {
+    select count(1) from users where last_name not null;
+} {10000}
 
 do_execsql_test where-clause-ne {
     select count(1) from users where id != 2000;
@@ -286,6 +341,16 @@ do_execsql_test where-id-index-seek-regression-test {
 9999
 10000}
 
+do_execsql_test where-id-index-seek-regression-test-opposite {
+    select id from users where 9999 < id;
+    select id from users where 10000 <= id;
+    select id from users where 2 > id;
+    select id from users where 1 >= id;
+} {10000
+10000
+1
+1}
+
 do_execsql_test where-id-index-seek-regression-test-2 {
     select count(1) from users where id > 0;
 } {10000}
@@ -407,3 +472,103 @@ foreach {operator} {
     # NULL comparison AND id=1
     do_execsql_test where-binary-one-operand-null-and-$operator "select first_name from users where first_name $operator NULL AND id = 1" {}
 }
+
+# Test literals in WHERE clause
+do_execsql_test where-literal-string {
+    select count(*) from users where 'yes';
+} {0}
+
+# FIXME: should return 0
+#do_execsql_test where-literal-number {
+#    select count(*) from users where x'DEADBEEF';
+#} {0}
+
+# Test CAST in WHERE clause
+do_execsql_test where-cast-string-to-int {
+    select count(*) from users where cast('1' as integer);
+} {10000}
+
+do_execsql_test where-cast-float-to-int {
+    select count(*) from users where cast('0' as integer);
+} {0}
+
+# Test FunctionCall in WHERE clause
+do_execsql_test where-function-length {
+    select count(*) from users where length(first_name);
+} {10000}
+
+# Test CASE in WHERE clause
+do_execsql_test where-case-simple {
+    select count(*) from users where 
+    case when age > 0 then 1 else 0 end;
+} {10000}
+
+do_execsql_test where-case-searched {
+    select count(*) from users where 
+    case age 
+        when 0 then 0
+        else 1
+    end;
+} {10000}
+
+# Test unary operators in WHERE clause
+do_execsql_test where-unary-not {
+    select count(*) from users where not (id = 1);
+} {9999}
+
+do_execsql_test where-unary-plus {
+    select count(*) from users where +1;
+} {10000}
+
+do_execsql_test where-unary-minus {
+    select count(*) from users where -1;
+} {10000}
+
+do_execsql_test where-unary-bitnot {
+    select count(*) from users where ~1;
+} {10000}
+
+# Test binary math operators in WHERE clause
+do_execsql_test where-binary-add {
+    select count(*) from users where 1 + 1;
+} {10000}
+
+do_execsql_test where-binary-subtract {
+    select count(*) from users where 2 - 1;
+} {10000}
+
+do_execsql_test where-binary-multiply {
+    select count(*) from users where 2 * 1;
+} {10000}
+
+do_execsql_test where-binary-divide {
+    select count(*) from users where 2 / 2;
+} {10000}
+
+do_execsql_test where-binary-modulo {
+    select count(*) from users where 3 % 2;
+} {10000}
+
+do_execsql_test where-binary-shift-left {
+    select count(*) from users where 1 << 1;
+} {10000}
+
+do_execsql_test where-binary-shift-right {
+    select count(*) from users where 2 >> 1;
+} {10000}
+
+do_execsql_test where-binary-bitwise-and {
+    select count(*) from users where 3 & 1;
+} {10000}
+
+do_execsql_test where-binary-bitwise-or {
+    select count(*) from users where 2 | 1;
+} {10000}
+
+do_execsql_test where-constant-condition-no-tables {
+    select 1 where 1 IS NULL;
+} {}
+
+do_execsql_test where-constant-condition-no-tables-2 {
+    select 1 where 1 IS NOT NULL;
+} {1}

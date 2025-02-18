@@ -1,18 +1,22 @@
 mod error;
 mod ext;
 mod function;
+mod functions;
+mod info;
 mod io;
 #[cfg(feature = "json")]
 mod json;
+pub mod mvcc;
 mod parameters;
 mod pseudo;
-mod result;
+pub mod result;
 mod schema;
 mod storage;
 mod translate;
 mod types;
 mod util;
 mod vdbe;
+mod vector;
 
 #[cfg(not(target_family = "wasm"))]
 #[global_allocator]
@@ -23,30 +27,37 @@ use fallible_iterator::FallibleIterator;
 use libloading::{Library, Symbol};
 #[cfg(not(target_family = "wasm"))]
 use limbo_ext::{ExtensionApi, ExtensionEntryPoint};
-use log::trace;
-use schema::Schema;
-use sqlite3_parser::ast;
-use sqlite3_parser::{ast::Cmd, lexer::sql::Parser};
+use limbo_ext::{ResultCode, VTabModuleImpl, Value as ExtValue};
+use limbo_sqlite3_parser::{ast, ast::Cmd, lexer::sql::Parser};
+use parking_lot::RwLock;
+use schema::{Column, Schema};
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::num::NonZero;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 use std::{cell::RefCell, rc::Rc};
 use storage::btree::btree_init_page;
 #[cfg(feature = "fs")]
 use storage::database::FileStorage;
 use storage::page_cache::DumbLruPageCache;
 use storage::pager::allocate_page;
+pub use storage::pager::PageRef;
 use storage::sqlite3_ondisk::{DatabaseHeader, DATABASE_HEADER_SIZE};
+pub use storage::wal::CheckpointMode;
 pub use storage::wal::WalFile;
 pub use storage::wal::WalFileShared;
+use types::OwnedValue;
 pub use types::Value;
 use util::parse_schema_rows;
+use vdbe::builder::QueryMode;
+use vdbe::VTabOpaqueCursor;
 
 pub use error::LimboError;
 use translate::select::prepare_select_plan;
 pub type Result<T, E = LimboError> = std::result::Result<T, E>;
 
+use crate::storage::wal::CheckpointResult;
 use crate::translate::optimizer::optimize_plan;
 pub use io::OpenFlags;
 pub use io::PlatformIO;
@@ -61,9 +72,10 @@ pub use storage::pager::Page;
 pub use storage::pager::Pager;
 pub use storage::wal::CheckpointStatus;
 pub use storage::wal::Wal;
+
 pub static DATABASE_VERSION: OnceLock<String> = OnceLock::new();
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 enum TransactionState {
     Write,
     Read,
@@ -75,6 +87,7 @@ pub struct Database {
     schema: Rc<RefCell<Schema>>,
     header: Rc<RefCell<DatabaseHeader>>,
     syms: Rc<RefCell<SymbolTable>>,
+    vtab_modules: HashMap<String, Rc<VTabModuleImpl>>,
     // Shared structures of a Database are the parts that are common to multiple threads that might
     // create DB connections.
     _shared_page_cache: Arc<RwLock<DumbLruPageCache>>,
@@ -137,13 +150,18 @@ impl Database {
             _shared_page_cache: _shared_page_cache.clone(),
             _shared_wal: shared_wal.clone(),
             syms,
+            vtab_modules: HashMap::new(),
         };
+        if let Err(e) = db.register_builtins() {
+            return Err(LimboError::ExtensionError(e));
+        }
         let db = Arc::new(db);
         let conn = Rc::new(Connection {
             db: db.clone(),
             pager,
             schema: schema.clone(),
             header,
+            auto_commit: RefCell::new(true),
             transaction_state: RefCell::new(TransactionState::None),
             last_insert_rowid: Cell::new(0),
             last_change: Cell::new(0),
@@ -162,6 +180,7 @@ impl Database {
             schema: self.schema.clone(),
             header: self.header.clone(),
             last_insert_rowid: Cell::new(0),
+            auto_commit: RefCell::new(true),
             transaction_state: RefCell::new(TransactionState::None),
             last_change: Cell::new(0),
             total_changes: Cell::new(0),
@@ -223,7 +242,7 @@ pub fn maybe_init_database_file(file: &Rc<dyn File>, io: &Arc<dyn IO>) -> Result
                 let completion = Completion::Write(WriteCompletion::new(Box::new(move |_| {
                     *flag_complete.borrow_mut() = true;
                 })));
-                file.pwrite(0, contents.buffer.clone(), Rc::new(completion))?;
+                file.pwrite(0, contents.buffer.clone(), completion)?;
             }
             let mut limit = 100;
             loop {
@@ -246,6 +265,7 @@ pub struct Connection {
     pager: Rc<Pager>,
     schema: Rc<RefCell<Schema>>,
     header: Rc<RefCell<DatabaseHeader>>,
+    auto_commit: RefCell<bool>,
     transaction_state: RefCell<TransactionState>,
     last_insert_rowid: Cell<u64>,
     last_change: Cell<i64>,
@@ -253,12 +273,12 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn prepare(self: &Rc<Connection>, sql: impl Into<String>) -> Result<Statement> {
-        let sql = sql.into();
-        trace!("Preparing: {}", sql);
-        let db = self.db.clone();
-        let syms: &SymbolTable = &db.syms.borrow();
+    pub fn prepare(self: &Rc<Connection>, sql: impl AsRef<str>) -> Result<Statement> {
+        let sql = sql.as_ref();
+        tracing::trace!("Preparing: {}", sql);
+        let db = &self.db;
         let mut parser = Parser::new(sql.as_bytes());
+        let syms = &db.syms.borrow();
         let cmd = parser.next()?;
         if let Some(cmd) = cmd {
             match cmd {
@@ -270,6 +290,7 @@ impl Connection {
                         self.pager.clone(),
                         Rc::downgrade(self),
                         syms,
+                        QueryMode::Normal,
                     )?);
                     Ok(Statement::new(program, self.pager.clone()))
                 }
@@ -281,9 +302,9 @@ impl Connection {
         }
     }
 
-    pub fn query(self: &Rc<Connection>, sql: impl Into<String>) -> Result<Option<Statement>> {
-        let sql = sql.into();
-        trace!("Querying: {}", sql);
+    pub fn query(self: &Rc<Connection>, sql: impl AsRef<str>) -> Result<Option<Statement>> {
+        let sql = sql.as_ref();
+        tracing::trace!("Querying: {}", sql);
         let mut parser = Parser::new(sql.as_bytes());
         let cmd = parser.next()?;
         match cmd {
@@ -304,6 +325,7 @@ impl Connection {
                     self.pager.clone(),
                     Rc::downgrade(self),
                     syms,
+                    QueryMode::Normal,
                 )?);
                 let stmt = Statement::new(program, self.pager.clone());
                 Ok(Some(stmt))
@@ -316,6 +338,7 @@ impl Connection {
                     self.pager.clone(),
                     Rc::downgrade(self),
                     syms,
+                    QueryMode::Explain,
                 )?;
                 program.explain();
                 Ok(None)
@@ -327,8 +350,9 @@ impl Connection {
                             &self.schema.borrow(),
                             *select,
                             &self.db.syms.borrow(),
+                            None,
                         )?;
-                        optimize_plan(&mut plan)?;
+                        optimize_plan(&mut plan, &self.schema.borrow())?;
                         println!("{}", plan);
                     }
                     _ => todo!(),
@@ -342,9 +366,9 @@ impl Connection {
         QueryRunner::new(self, sql)
     }
 
-    pub fn execute(self: &Rc<Connection>, sql: impl Into<String>) -> Result<()> {
-        let sql = sql.into();
-        let db = self.db.clone();
+    pub fn execute(self: &Rc<Connection>, sql: impl AsRef<str>) -> Result<()> {
+        let sql = sql.as_ref();
+        let db = &self.db;
         let syms: &SymbolTable = &db.syms.borrow();
         let mut parser = Parser::new(sql.as_bytes());
         let cmd = parser.next()?;
@@ -358,6 +382,7 @@ impl Connection {
                         self.pager.clone(),
                         Rc::downgrade(self),
                         syms,
+                        QueryMode::Explain,
                     )?;
                     program.explain();
                 }
@@ -370,6 +395,7 @@ impl Connection {
                         self.pager.clone(),
                         Rc::downgrade(self),
                         syms,
+                        QueryMode::Normal,
                     )?;
 
                     let mut state =
@@ -390,14 +416,14 @@ impl Connection {
         Ok(())
     }
 
-    pub fn checkpoint(&self) -> Result<()> {
-        self.pager.clear_page_cache();
-        Ok(())
+    pub fn checkpoint(&self) -> Result<CheckpointResult> {
+        let checkpoint_result = self.pager.clear_page_cache();
+        Ok(checkpoint_result)
     }
 
     #[cfg(not(target_family = "wasm"))]
     pub fn load_extension<P: AsRef<std::ffi::OsStr>>(&self, path: P) -> Result<()> {
-        Database::load_extension(self.db.as_ref(), path)
+        Database::load_extension(&self.db, path)
     }
 
     /// Close a connection and checkpoint.
@@ -405,7 +431,7 @@ impl Connection {
         loop {
             // TODO: make this async?
             match self.pager.checkpoint()? {
-                CheckpointStatus::Done => {
+                CheckpointStatus::Done(_) => {
                     return Ok(());
                 }
                 CheckpointStatus::IO => {
@@ -454,24 +480,20 @@ impl Statement {
         self.state.interrupt();
     }
 
-    pub fn step(&mut self) -> Result<StepResult<'_>> {
-        let result = self.program.step(&mut self.state, self.pager.clone())?;
-        match result {
-            vdbe::StepResult::Row(row) => Ok(StepResult::Row(Row { values: row.values })),
-            vdbe::StepResult::IO => Ok(StepResult::IO),
-            vdbe::StepResult::Done => Ok(StepResult::Done),
-            vdbe::StepResult::Interrupt => Ok(StepResult::Interrupt),
-            vdbe::StepResult::Busy => Ok(StepResult::Busy),
+    pub fn step(&mut self) -> Result<StepResult> {
+        self.program.step(&mut self.state, self.pager.clone())
+    }
+
+    pub fn num_columns(&self) -> usize {
+        self.program.result_columns.len()
+    }
+
+    pub fn get_column_name(&self, idx: usize) -> Cow<String> {
+        let column = &self.program.result_columns[idx];
+        match column.name(&self.program.table_references) {
+            Some(name) => Cow::Borrowed(name),
+            None => Cow::Owned(column.expr.to_string()),
         }
-    }
-
-    pub fn query(&mut self) -> Result<Statement> {
-        let stmt = Statement::new(self.program.clone(), self.pager.clone());
-        Ok(stmt)
-    }
-
-    pub fn columns(&self) -> &[String] {
-        &self.program.columns
     }
 
     pub fn parameters(&self) -> &parameters::Parameters {
@@ -489,26 +511,74 @@ impl Statement {
     pub fn reset(&mut self) {
         self.state.reset();
     }
+
+    pub fn row(&self) -> Option<&Row> {
+        self.state.result_row.as_ref()
+    }
 }
 
-#[derive(PartialEq)]
-pub enum StepResult<'a> {
-    Row(Row<'a>),
-    IO,
-    Done,
-    Interrupt,
-    Busy,
+pub type Row = types::Record;
+
+pub type StepResult = vdbe::StepResult;
+
+#[derive(Clone, Debug)]
+pub struct VirtualTable {
+    name: String,
+    args: Option<Vec<ast::Expr>>,
+    pub implementation: Rc<VTabModuleImpl>,
+    columns: Vec<Column>,
 }
 
-#[derive(PartialEq)]
-pub struct Row<'a> {
-    pub values: Vec<Value<'a>>,
-}
+impl VirtualTable {
+    pub fn open(&self) -> VTabOpaqueCursor {
+        let cursor = unsafe { (self.implementation.open)() };
+        VTabOpaqueCursor::new(cursor)
+    }
 
-impl<'a> Row<'a> {
-    pub fn get<T: types::FromValue<'a> + 'a>(&self, idx: usize) -> Result<T> {
-        let value = &self.values[idx];
-        T::from_value(value)
+    pub fn filter(
+        &self,
+        cursor: &VTabOpaqueCursor,
+        arg_count: usize,
+        args: Vec<OwnedValue>,
+    ) -> Result<bool> {
+        let mut filter_args = Vec::with_capacity(arg_count);
+        for i in 0..arg_count {
+            let ownedvalue_arg = args.get(i).unwrap();
+            let extvalue_arg: ExtValue = match ownedvalue_arg {
+                OwnedValue::Null => Ok(ExtValue::null()),
+                OwnedValue::Integer(i) => Ok(ExtValue::from_integer(*i)),
+                OwnedValue::Float(f) => Ok(ExtValue::from_float(*f)),
+                OwnedValue::Text(t) => Ok(ExtValue::from_text(t.as_str().to_string())),
+                OwnedValue::Blob(b) => Ok(ExtValue::from_blob((**b).clone())),
+                other => Err(LimboError::ExtensionError(format!(
+                    "Unsupported value type: {:?}",
+                    other
+                ))),
+            }?;
+            filter_args.push(extvalue_arg);
+        }
+        let rc = unsafe {
+            (self.implementation.filter)(cursor.as_ptr(), arg_count as i32, filter_args.as_ptr())
+        };
+        match rc {
+            ResultCode::OK => Ok(true),
+            ResultCode::EOF => Ok(false),
+            _ => Err(LimboError::ExtensionError(rc.to_string())),
+        }
+    }
+
+    pub fn column(&self, cursor: &VTabOpaqueCursor, column: usize) -> Result<OwnedValue> {
+        let val = unsafe { (self.implementation.column)(cursor.as_ptr(), column as u32) };
+        OwnedValue::from_ffi(&val)
+    }
+
+    pub fn next(&self, cursor: &VTabOpaqueCursor) -> Result<bool> {
+        let rc = unsafe { (self.implementation.next)(cursor.as_ptr()) };
+        match rc {
+            ResultCode::OK => Ok(true),
+            ResultCode::EOF => Ok(false),
+            _ => Err(LimboError::ExtensionError("Next failed".to_string())),
+        }
     }
 }
 
@@ -516,6 +586,7 @@ pub(crate) struct SymbolTable {
     pub functions: HashMap<String, Rc<function::ExternalFunc>>,
     #[cfg(not(target_family = "wasm"))]
     extensions: Vec<(Library, *const ExtensionApi)>,
+    pub vtabs: HashMap<String, VirtualTable>,
 }
 
 impl std::fmt::Debug for SymbolTable {
@@ -557,7 +628,7 @@ impl SymbolTable {
     pub fn new() -> Self {
         Self {
             functions: HashMap::new(),
-            // TODO: wasm libs will be very different
+            vtabs: HashMap::new(),
             #[cfg(not(target_family = "wasm"))]
             extensions: Vec::new(),
         }

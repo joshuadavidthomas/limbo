@@ -6,18 +6,31 @@ import org.gradle.api.tasks.testing.logging.TestLogEvent
 plugins {
     java
     application
+    `java-library`
+    `maven-publish`
     id("net.ltgt.errorprone") version "3.1.0"
 
     // If you're stuck on JRE 8, use id 'com.diffplug.spotless' version '6.13.0' or older.
     id("com.diffplug.spotless") version "6.13.0"
 }
 
-group = "org.github.tursodatabase"
-version = "0.0.1-SNAPSHOT"
+group = properties["projectGroup"]!!
+version = properties["projectVersion"]!!
 
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8
     targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("mavenJava") {
+            from(components["java"])
+            groupId = "tech.turso"
+            artifactId = "limbo"
+            version = "0.0.1-SNAPSHOT"
+        }
+    }
 }
 
 repositories {
@@ -25,8 +38,7 @@ repositories {
 }
 
 dependencies {
-    implementation("ch.qos.logback:logback-classic:1.2.13")
-    implementation("ch.qos.logback:logback-core:1.2.13")
+    compileOnly("org.slf4j:slf4j-api:1.7.32")
 
     errorprone("com.uber.nullaway:nullaway:0.10.26") // maximum version which supports java 8
     errorprone("com.google.errorprone:error_prone_core:2.10.0") // maximum version which supports java 8
@@ -37,13 +49,25 @@ dependencies {
 }
 
 application {
-    mainClass.set("org.github.tursodatabase.Main")
-
-    val limboSystemLibraryPath = System.getenv("LIMBO_SYSTEM_PATH")
+    val limboSystemLibraryPath = System.getenv("LIMBO_LIBRARY_PATH")
     if (limboSystemLibraryPath != null) {
         applicationDefaultJvmArgs = listOf(
             "-Djava.library.path=${System.getProperty("java.library.path")}:$limboSystemLibraryPath"
         )
+    }
+}
+
+tasks.jar {
+    from("libs") {
+        into("libs")
+    }
+}
+
+sourceSets {
+    test {
+        resources {
+            file("src/main/resource/limbo-jdbc.properties")
+        }
     }
 }
 
@@ -102,10 +126,10 @@ tasks.withType<JavaCompile> {
         disableAllChecks = true
         check("NullAway", CheckSeverity.ERROR)
 
-        option("NullAway:AnnotatedPackages", "org.github.tursodatabase")
+        option("NullAway:AnnotatedPackages", "tech.turso")
         option(
             "NullAway:CustomNullableAnnotations",
-            "org.github.tursodatabase.annotations.Nullable,org.github.tursodatabase.annotations.SkipNullableCheck"
+            "tech.turso.annotations.Nullable,tech.turso.annotations.SkipNullableCheck"
         )
     }
     if (name.lowercase().contains("test")) {

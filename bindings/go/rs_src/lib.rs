@@ -26,9 +26,8 @@ pub unsafe extern "C" fn db_open(path: *const c_char) -> *mut c_void {
         let db = Database::open_file(io.clone(), &db_options.path.to_string());
         match db {
             Ok(db) => {
-                println!("Opened database: {}", path);
                 let conn = db.connect();
-                return TursoConn::new(conn, io).to_ptr();
+                return LimboConn::new(conn, io).to_ptr();
             }
             Err(e) => {
                 println!("Error opening database: {}", e);
@@ -40,26 +39,54 @@ pub unsafe extern "C" fn db_open(path: *const c_char) -> *mut c_void {
 }
 
 #[allow(dead_code)]
-struct TursoConn {
+struct LimboConn {
     conn: Rc<Connection>,
     io: Arc<dyn limbo_core::IO>,
+    err: Option<LimboError>,
 }
 
-impl TursoConn {
+impl<'conn> LimboConn {
     fn new(conn: Rc<Connection>, io: Arc<dyn limbo_core::IO>) -> Self {
-        TursoConn { conn, io }
+        LimboConn {
+            conn,
+            io,
+            err: None,
+        }
     }
+
     #[allow(clippy::wrong_self_convention)]
     fn to_ptr(self) -> *mut c_void {
         Box::into_raw(Box::new(self)) as *mut c_void
     }
 
-    fn from_ptr(ptr: *mut c_void) -> &'static mut TursoConn {
+    fn from_ptr(ptr: *mut c_void) -> &'conn mut LimboConn {
         if ptr.is_null() {
             panic!("Null pointer");
         }
-        unsafe { &mut *(ptr as *mut TursoConn) }
+        unsafe { &mut *(ptr as *mut LimboConn) }
     }
+
+    fn get_error(&mut self) -> *const c_char {
+        if let Some(err) = &self.err {
+            let err = format!("{}", err);
+            let c_str = std::ffi::CString::new(err).unwrap();
+            self.err = None;
+            c_str.into_raw() as *const c_char
+        } else {
+            std::ptr::null()
+        }
+    }
+}
+/// Get the error value from the connection, if any, as a null
+/// terminated string. The caller is responsible for freeing the
+/// memory with `free_string`.
+#[no_mangle]
+pub extern "C" fn db_get_error(ctx: *mut c_void) -> *const c_char {
+    if ctx.is_null() {
+        return std::ptr::null();
+    }
+    let conn = LimboConn::from_ptr(ctx);
+    conn.get_error()
 }
 
 /// Close the database connection
@@ -68,7 +95,7 @@ impl TursoConn {
 #[no_mangle]
 pub unsafe extern "C" fn db_close(db: *mut c_void) {
     if !db.is_null() {
-        let _ = unsafe { Box::from_raw(db as *mut TursoConn) };
+        let _ = unsafe { Box::from_raw(db as *mut LimboConn) };
     }
 }
 

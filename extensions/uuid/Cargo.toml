@@ -5,12 +5,17 @@ authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Limbo UUID extension"
 
 [lib]
 crate-type = ["cdylib", "lib"]
 
+[features]
+static= [ "limbo_ext/static" ]
 
 [dependencies]
-limbo_ext = { path = "../core"}
+limbo_ext = { workspace = true, features = ["static"] }
 uuid = { version = "1.11.0", features = ["v4", "v7"] }
-log = "0.4.20"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
