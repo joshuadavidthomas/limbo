@@ -105,6 +105,10 @@ fn execute_query_rusqlite(
             connection.execute(update.to_string().as_str(), ())?;
             Ok(vec![])
         }
+        Query::CreateIndex(create_index) => {
+            connection.execute(create_index.to_string().as_str(), ())?;
+            Ok(vec![])
+        }
     }
 }
 

@@ -8,7 +8,7 @@ use crate::{
         query::{
             select::{Distinctness, Predicate, ResultColumn},
             update::Update,
-            Create, Delete, Drop, Insert, Query, Select,
+            Create, CreateIndex, Delete, Drop, Insert, Query, Select,
         },
         table::Value,
     },
@@ -205,6 +205,7 @@ pub(crate) struct InteractionStats {
     pub(crate) delete_count: usize,
     pub(crate) update_count: usize,
     pub(crate) create_count: usize,
+    pub(crate) create_index_count: usize,
     pub(crate) drop_count: usize,
 }
 
@@ -212,12 +213,13 @@ impl Display for InteractionStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Read: {}, Write: {}, Delete: {}, Update: {}, Create: {}, Drop: {}",
+            "Read: {}, Write: {}, Delete: {}, Update: {}, Create: {}, CreateIndex: {}, Drop: {}",
             self.read_count,
             self.write_count,
             self.delete_count,
             self.update_count,
             self.create_count,
+            self.create_index_count,
             self.drop_count
         )
     }
@@ -375,6 +377,9 @@ impl Interactions {
                             Query::Update(update) => {
                                 update.shadow(env);
                             }
+                            Query::CreateIndex(create_index) => {
+                                create_index.shadow(env);
+                            }
                         },
                         Interaction::Assertion(_) => {}
                         Interaction::Assumption(_) => {}
@@ -402,6 +407,7 @@ impl InteractionPlan {
         let mut create = 0;
         let mut drop = 0;
         let mut update = 0;
+        let mut create_index = 0;
 
         for interactions in &self.plan {
             match interactions {
@@ -415,6 +421,7 @@ impl InteractionPlan {
                                 Query::Create(_) => create += 1,
                                 Query::Drop(_) => drop += 1,
                                 Query::Update(_) => update += 1,
+                                Query::CreateIndex(_) => create_index += 1,
                             }
                         }
                     }
@@ -426,6 +433,7 @@ impl InteractionPlan {
                     Query::Create(_) => create += 1,
                     Query::Drop(_) => drop += 1,
                     Query::Update(_) => update += 1,
+                    Query::CreateIndex(_) => create_index += 1,
                 },
                 Interactions::Fault(_) => {}
             }
@@ -435,9 +443,10 @@ impl InteractionPlan {
             read_count: read,
             write_count: write,
             delete_count: delete,
-            create_count: create,
-            drop_count: drop,
             update_count: update,
+            create_count: create,
+            create_index_count: create_index,
+            drop_count: drop,
         }
     }
 }
@@ -646,6 +655,15 @@ fn random_drop<R: rand::Rng>(rng: &mut R, env: &SimulatorEnv) -> Interactions {
     Interactions::Query(Query::Drop(Drop::arbitrary_from(rng, env)))
 }
 
+fn random_create_index<R: rand::Rng>(rng: &mut R, env: &SimulatorEnv) -> Option<Interactions> {
+    if env.tables.is_empty() {
+        return None;
+    }
+    Some(Interactions::Query(Query::CreateIndex(
+        CreateIndex::arbitrary_from(rng, env),
+    )))
+}
+
 fn random_fault<R: rand::Rng>(_rng: &mut R, _env: &SimulatorEnv) -> Interactions {
     Interactions::Fault(Fault::Disconnect)
 }
@@ -675,6 +693,17 @@ impl ArbitraryFrom<(&SimulatorEnv, InteractionStats)> for Interactions {
                 (
                     remaining_.create,
                     Box::new(|rng: &mut R| random_create(rng, env)),
+                ),
+                (
+                    remaining_.create_index,
+                    Box::new(|rng: &mut R| {
+                        if let Some(interaction) = random_create_index(rng, env) {
+                            interaction
+                        } else {
+                            // if no tables exist, we can't create an index, so fallback to creating a table
+                            random_create(rng, env)
+                        }
+                    }),
                 ),
                 (
                     remaining_.delete,

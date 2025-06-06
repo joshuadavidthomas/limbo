@@ -128,7 +128,7 @@ impl ArbitraryFrom<(&SimulatorEnv, &Remaining)> for Query {
                     Box::new(|rng| Self::Insert(Insert::arbitrary_from(rng, env))),
                 ),
                 (
-                    remaining.write,
+                    f64::min(remaining.write, remaining.delete),
                     Box::new(|rng| Self::Delete(Delete::arbitrary_from(rng, env))),
                 ),
             ],

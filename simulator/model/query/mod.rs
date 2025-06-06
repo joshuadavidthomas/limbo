@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
 pub(crate) use create::Create;
+pub(crate) use create_index::CreateIndex;
 pub(crate) use delete::Delete;
 pub(crate) use drop::Drop;
 pub(crate) use insert::Insert;
@@ -11,6 +12,7 @@ use update::Update;
 use crate::{model::table::Value, runner::env::SimulatorEnv};
 
 pub mod create;
+pub mod create_index;
 pub mod delete;
 pub mod drop;
 pub mod insert;
@@ -26,6 +28,7 @@ pub(crate) enum Query {
     Delete(Delete),
     Update(Update),
     Drop(Drop),
+    CreateIndex(CreateIndex),
 }
 
 impl Query {
@@ -38,6 +41,7 @@ impl Query {
             | Query::Delete(Delete { table, .. })
             | Query::Update(Update { table, .. })
             | Query::Drop(Drop { table, .. }) => vec![table.clone()],
+            Query::CreateIndex(CreateIndex { table_name, .. }) => vec![table_name.clone()],
         }
     }
     pub(crate) fn uses(&self) -> Vec<String> {
@@ -49,6 +53,7 @@ impl Query {
             | Query::Delete(Delete { table, .. })
             | Query::Update(Update { table, .. })
             | Query::Drop(Drop { table, .. }) => vec![table.clone()],
+            Query::CreateIndex(CreateIndex { table_name, .. }) => vec![table_name.clone()],
         }
     }
 
@@ -60,6 +65,7 @@ impl Query {
             Query::Select(select) => select.shadow(env),
             Query::Update(update) => update.shadow(env),
             Query::Drop(drop) => drop.shadow(env),
+            Query::CreateIndex(create_index) => create_index.shadow(env),
         }
     }
 }
@@ -73,6 +79,7 @@ impl Display for Query {
             Self::Delete(delete) => write!(f, "{}", delete),
             Self::Update(update) => write!(f, "{}", update),
             Self::Drop(drop) => write!(f, "{}", drop),
+            Self::CreateIndex(create_index) => write!(f, "{}", create_index),
         }
     }
 }

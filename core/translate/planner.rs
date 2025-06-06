@@ -14,7 +14,7 @@ use crate::{
     function::Func,
     schema::{Schema, Table},
     translate::expr::walk_expr_mut,
-    util::{exprs_are_equivalent, normalize_ident, vtable_args},
+    util::{exprs_are_equivalent, normalize_ident},
     vdbe::{builder::TableRefIdCounter, BranchOffset},
     Result,
 };
@@ -344,18 +344,7 @@ fn parse_from_clause_table<'a>(
         }
         ast::SelectTable::TableCall(qualified_name, maybe_args, maybe_alias) => {
             let normalized_name = &normalize_ident(qualified_name.name.0.as_str());
-            let args = match maybe_args {
-                Some(ref args) => vtable_args(args),
-                None => vec![],
-            };
-            let vtab = crate::VirtualTable::from_args(
-                None,
-                normalized_name,
-                args,
-                syms,
-                limbo_ext::VTabKind::TableValuedFunction,
-                maybe_args,
-            )?;
+            let vtab = crate::VirtualTable::function(normalized_name, maybe_args, syms)?;
             let alias = maybe_alias
                 .as_ref()
                 .map(|a| match a {

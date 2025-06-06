@@ -77,28 +77,9 @@ const run = async (seed: string, bin: string, args: string[]) => {
   });
 
   const timeout = timeouter(PER_RUN_TIMEOUT_SECONDS, runNumber);
-  timeout.catch(async (err) => {
-    if (err instanceof TimeoutError) {
-      console.log(`Timeout on seed ${seed}, exiting...`);
-      proc.kill();
-      const stdout = await new Response(proc.stdout).text();
-      const stderr = await new Response(proc.stderr).text();
-      const output = stdout + '\n' + stderr;
-      const seedForGithubIssue = seed;
-      const lastLines = output.split('\n').slice(-100).join('\n');
-      console.log(`Simulator seed: ${seedForGithubIssue}`);
-      await github.postGitHubIssue({
-        type: "timeout",
-        seed: seedForGithubIssue,
-        command: args.join(" "),
-        output: lastLines,
-      });
-      process.exit(0);
-    }
-  });
 
   try {
-    const exitCode = await proc.exited;
+    const exitCode = await Promise.race([proc.exited, timeout]);
     const stdout = await new Response(proc.stdout).text();
     const stderr = await new Response(proc.stderr).text();
 
@@ -138,7 +119,24 @@ const run = async (seed: string, bin: string, args: string[]) => {
       }
     }
   } catch (err) {
-    throw err;
+    if (err instanceof TimeoutError) {
+      console.log(`Timeout on seed ${seed}, posting to Github...`);
+      proc.kill();
+      const stdout = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      const output = stdout + '\n' + stderr;
+      const seedForGithubIssue = seed;
+      const lastLines = output.split('\n').slice(-100).join('\n');
+      console.log(`Simulator seed: ${seedForGithubIssue}`);
+      await github.postGitHubIssue({
+        type: "timeout",
+        seed: seedForGithubIssue,
+        command: args.join(" "),
+        output: lastLines,
+      });
+    } else {
+      throw err;
+    }
   } finally {
     // @ts-ignore
     timeout.clear();

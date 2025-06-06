@@ -179,7 +179,7 @@ pub(crate) fn execute_interaction(
     interaction: &Interaction,
     stack: &mut Vec<ResultSet>,
 ) -> Result<ExecutionContinuation> {
-    tracing::trace!(
+    tracing::info!(
         "execute_interaction(connection_index={}, interaction={})",
         connection_index,
         interaction

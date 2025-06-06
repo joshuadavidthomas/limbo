@@ -176,9 +176,9 @@ impl Limbo {
         self
     }
 
-    fn first_run(&mut self, sql: Option<String>, quiet: bool) -> io::Result<()> {
+    fn first_run(&mut self, sql: Option<String>, quiet: bool) -> Result<(), LimboError> {
         if let Some(sql) = sql {
-            self.handle_first_input(&sql);
+            self.handle_first_input(&sql)?;
         }
         if !quiet {
             self.write_fmt(format_args!("Limbo v{}", env!("CARGO_PKG_VERSION")))?;
@@ -188,12 +188,13 @@ impl Limbo {
         Ok(())
     }
 
-    fn handle_first_input(&mut self, cmd: &str) {
+    fn handle_first_input(&mut self, cmd: &str) -> Result<(), LimboError> {
         if cmd.trim().starts_with('.') {
             self.handle_dot_command(&cmd[1..]);
         } else {
             self.run_query(cmd);
         }
+        self.close_conn()?;
         std::process::exit(0);
     }
 

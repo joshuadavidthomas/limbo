@@ -32,7 +32,7 @@ class Database {
    */
   prepare(sql) {
     try {
-      return new Statement(this.db.prepare(sql));
+      return new Statement(this.db.prepare(sql), this);
     } catch (err) {
       throw convertError(err);
     }
@@ -148,8 +148,9 @@ class Database {
  * Statement represents a prepared SQL statement that can be executed.
  */
 class Statement {
-  constructor(stmt) {
+  constructor(stmt, database) {
     this.stmt = stmt;
+    this.db = database;
   }
 
   /**
@@ -174,6 +175,10 @@ class Statement {
 
   get reader() {
     throw new Error("not implemented");
+  }
+
+  get database() {
+    return this.db;
   }
 
   /**

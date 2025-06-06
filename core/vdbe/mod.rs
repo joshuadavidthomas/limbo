@@ -53,7 +53,6 @@ use regex::Regex;
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
-    ffi::c_void,
     num::NonZero,
     ops::Deref,
     rc::{Rc, Weak},
@@ -200,37 +199,6 @@ impl<const N: usize> Bitfield<N> {
     fn get(&self, bit: usize) -> bool {
         assert!(bit < N * 64, "bit out of bounds");
         (self.0[bit / 64] & (1 << (bit % 64))) != 0
-    }
-}
-
-type VTabOpaqueCursorCloseFn = unsafe extern "C" fn(*const c_void) -> limbo_ext::ResultCode;
-
-pub struct VTabOpaqueCursor {
-    cursor: *const c_void,
-    close: VTabOpaqueCursorCloseFn,
-}
-
-impl VTabOpaqueCursor {
-    pub fn new(cursor: *const c_void, close: VTabOpaqueCursorCloseFn) -> Result<Self> {
-        if cursor.is_null() {
-            return Err(LimboError::InternalError(
-                "VTabOpaqueCursor: cursor is null".into(),
-            ));
-        }
-        Ok(Self { cursor, close })
-    }
-
-    pub fn as_ptr(&self) -> *const c_void {
-        self.cursor
-    }
-}
-
-impl Drop for VTabOpaqueCursor {
-    fn drop(&mut self) {
-        let result = unsafe { (self.close)(self.cursor) };
-        if !result.is_ok() {
-            tracing::error!("Failed to close virtual table cursor");
-        }
     }
 }
 

@@ -315,7 +315,7 @@ def test_series():
     ext_path = "./target/debug/liblimbo_series"
     limbo.run_test_fn(
         "SELECT * FROM generate_series(1, 10);",
-        lambda res: "Virtual table module not found: generate_series" in res,
+        lambda res: "No such table-valued function: generate_series" in res,
     )
     limbo.execute_dot(f".load {ext_path}")
     limbo.run_test_fn(

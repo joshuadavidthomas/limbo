@@ -36,8 +36,8 @@ Limbo is a _work-in-progress_, in-process OLTP database engine library written i
 
 In the future, we will be also working on:
 
-* **Integrated vector search** for embeddings and vector similarity.
 * **`BEGIN CONCURRENT`** for improved write throughput.
+* **Indexing for vector search**.
 * **Improved schema management** including better `ALTER` support and strict column types by default.
 
 ## Getting Started

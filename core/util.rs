@@ -82,27 +82,12 @@ pub fn parse_schema_rows(
                                     vtab.clone()
                                 } else {
                                     let mod_name = module_name_from_sql(sql)?;
-                                    if let Some(vmod) = syms.vtab_modules.get(mod_name) {
-                                        if let limbo_ext::VTabKind::VirtualTable = vmod.module_kind
-                                        {
-                                            crate::VirtualTable::from_args(
-                                                Some(name),
-                                                mod_name,
-                                                module_args_from_sql(sql)?,
-                                                syms,
-                                                vmod.module_kind,
-                                                None,
-                                            )?
-                                        } else {
-                                            return Err(LimboError::Corrupt("Table valued function: {name} registered as virtual table in schema".to_string()));
-                                        }
-                                    } else {
-                                        // the extension isn't loaded, so we emit a warning.
-                                        return Err(LimboError::ExtensionError(format!(
-                                            "Virtual table module '{}' not found\nPlease load extension",
-                                            &mod_name
-                                        )));
-                                    }
+                                    crate::VirtualTable::table(
+                                        Some(name),
+                                        mod_name,
+                                        module_args_from_sql(sql)?,
+                                        syms,
+                                    )?
                                 };
                                 schema.add_virtual_table(vtab);
                             } else {

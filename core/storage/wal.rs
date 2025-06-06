@@ -1,6 +1,7 @@
 #![allow(clippy::arc_with_non_send_sync)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+use std::array;
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use tracing::{debug, trace};
@@ -61,9 +62,13 @@ impl CheckpointResult {
 
 #[derive(Debug, Copy, Clone)]
 pub enum CheckpointMode {
+    /// Checkpoint as many frames as possible without waiting for any database readers or writers to finish, then sync the database file if all frames in the log were checkpointed.
     Passive,
+    /// This mode blocks until there is no database writer and all readers are reading from the most recent database snapshot. It then checkpoints all frames in the log file and syncs the database file. This mode blocks new database writers while it is pending, but new database readers are allowed to continue unimpeded.
     Full,
+    /// This mode works the same way as `Full` with the addition that after checkpointing the log file it blocks (calls the busy-handler callback) until all readers are reading from the database file only. This ensures that the next writer will restart the log file from the beginning. Like `Full`, this mode blocks new database writer attempts while it is pending, but does not impede readers.
     Restart,
+    /// This mode works the same way as `Restart` with the addition that it also truncates the log file to zero bytes just prior to a successful return.
     Truncate,
 }
 
@@ -768,13 +773,22 @@ impl Wal for WalFile {
                     let everything_backfilled = shared.max_frame.load(Ordering::SeqCst)
                         == self.ongoing_checkpoint.max_frame;
                     if everything_backfilled {
-                        // Here we know that we backfilled everything, therefore we can safely
-                        // reset the wal.
-                        shared.frame_cache.lock().clear();
-                        shared.pages_in_frames.lock().clear();
-                        shared.max_frame.store(0, Ordering::SeqCst);
-                        shared.nbackfills.store(0, Ordering::SeqCst);
-                        // TODO(pere): truncate wal file here.
+                        // TODO: Even in Passive mode, if everything was backfilled we should
+                        // truncate and fsync the *db file*
+
+                        // To properly reset the *wal file* we will need restart and/or truncate mode.
+                        // Currently, it will grow the WAL file indefinetly, but don't resetting is better than breaking.
+                        // Check: https://github.com/sqlite/sqlite/blob/2bd9f69d40dd240c4122c6d02f1ff447e7b5c098/src/wal.c#L2193
+                        if !matches!(mode, CheckpointMode::Passive) {
+                            // Here we know that we backfilled everything, therefore we can safely
+                            // reset the wal.
+                            shared.frame_cache.lock().clear();
+                            shared.pages_in_frames.lock().clear();
+                            shared.max_frame.store(0, Ordering::SeqCst);
+                            shared.nbackfills.store(0, Ordering::SeqCst);
+                            // TODO: if all frames were backfilled into the db file, calls fsync
+                            // TODO(pere): truncate wal file here.
+                        }
                     } else {
                         shared
                             .nbackfills
@@ -896,7 +910,7 @@ impl WalFileShared {
         let header = if file.size()? > 0 {
             let wal_file_shared = sqlite3_ondisk::read_entire_wal_dumb(&file)?;
             // TODO: Return a completion instead.
-            let mut max_loops = 100000;
+            let mut max_loops = 100_000;
             while !unsafe { &*wal_file_shared.get() }
                 .loaded
                 .load(Ordering::SeqCst)
@@ -953,33 +967,11 @@ impl WalFileShared {
             last_checksum: checksum,
             file,
             pages_in_frames: Arc::new(SpinLock::new(Vec::new())),
-            read_locks: [
-                LimboRwLock {
-                    lock: AtomicU32::new(NO_LOCK),
-                    nreads: AtomicU32::new(0),
-                    value: AtomicU32::new(READMARK_NOT_USED),
-                },
-                LimboRwLock {
-                    lock: AtomicU32::new(NO_LOCK),
-                    nreads: AtomicU32::new(0),
-                    value: AtomicU32::new(READMARK_NOT_USED),
-                },
-                LimboRwLock {
-                    lock: AtomicU32::new(NO_LOCK),
-                    nreads: AtomicU32::new(0),
-                    value: AtomicU32::new(READMARK_NOT_USED),
-                },
-                LimboRwLock {
-                    lock: AtomicU32::new(NO_LOCK),
-                    nreads: AtomicU32::new(0),
-                    value: AtomicU32::new(READMARK_NOT_USED),
-                },
-                LimboRwLock {
-                    lock: AtomicU32::new(NO_LOCK),
-                    nreads: AtomicU32::new(0),
-                    value: AtomicU32::new(READMARK_NOT_USED),
-                },
-            ],
+            read_locks: array::from_fn(|_| LimboRwLock {
+                lock: AtomicU32::new(NO_LOCK),
+                nreads: AtomicU32::new(0),
+                value: AtomicU32::new(READMARK_NOT_USED),
+            }),
             write_lock: LimboRwLock {
                 lock: AtomicU32::new(NO_LOCK),
                 nreads: AtomicU32::new(0),

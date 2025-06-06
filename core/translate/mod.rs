@@ -88,6 +88,7 @@ pub fn translate(
             body.map(|b| *b),
             database_header.clone(),
             pager,
+            connection.clone(),
             program,
         )?,
         stmt => translate_inner(schema, stmt, syms, query_mode, program)?,
